@@ -157,7 +157,8 @@ func NewADLv1(bucket string, flags *FlagStorage, config *ADLv1Config) (*ADLv1, e
 			// larger than 30000000 bytes (28.6MB) (28MB
 			// also failed in at one point, but as of
 			// 2019-11-07 seems to work)
-			MaxMultipartSize: 20 * 1024 * 1024,
+			MaxMultipartSize:   20 * 1024 * 1024,
+			SupportsMultiRange: false, // ADLv1 doesn't support multi-range requests
 		},
 	}
 
@@ -484,6 +485,11 @@ func (b *ADLv1) GetBlob(param *GetBlobInput) (*GetBlobOutput, error) {
 	resp.Value = nil
 
 	return &res, nil
+}
+
+func (b *ADLv1) GetBlobMultiRange(param *GetBlobMultiRangeInput) (*GetBlobMultiRangeOutput, error) {
+	// ADLv1 doesn't support multi-range requests natively
+	return nil, syscall.ENOTSUP
 }
 
 func (b *ADLv1) PutBlob(param *PutBlobInput) (*PutBlobOutput, error) {

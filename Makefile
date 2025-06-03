@@ -3,6 +3,9 @@ export CGO_ENABLED=0
 run-test: s3proxy.jar
 	./test/run-tests.sh
 
+run-test-multirange: s3proxy.jar
+	cd internal && go test -v -run TestMultiRange
+
 s3proxy.jar:
 	wget https://github.com/gaul/s3proxy/releases/download/s3proxy-1.8.0/s3proxy -O s3proxy.jar
 

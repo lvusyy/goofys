@@ -180,8 +180,9 @@ func NewAZBlob(container string, config *AZBlobConfig) (*AZBlob, error) {
 	b := &AZBlob{
 		config: config,
 		cap: Capabilities{
-			MaxMultipartSize: 100 * 1024 * 1024,
-			Name:             "wasb",
+			MaxMultipartSize:   100 * 1024 * 1024,
+			Name:               "wasb",
+			SupportsMultiRange: false, // Azure Blob Storage doesn't support multi-range requests
 		},
 		pipeline:         p,
 		bucket:           container,
@@ -772,6 +773,61 @@ func (b *AZBlob) GetBlob(param *GetBlobInput) (*GetBlobOutput, error) {
 			Metadata:    metadata,
 		},
 		Body: resp.Body(azblob.RetryReaderOptions{}),
+	}, nil
+}
+
+func (b *AZBlob) GetBlobMultiRange(param *GetBlobMultiRangeInput) (*GetBlobMultiRangeOutput, error) {
+	// Azure Blob Storage doesn't support multi-range requests natively
+	// Fall back to multiple single-range requests
+	if len(param.Ranges) == 0 {
+		return nil, fmt.Errorf("no ranges specified")
+	}
+
+	var parts []MultiRangePart
+	var firstResp *GetBlobOutput
+
+	for i, r := range param.Ranges {
+		// Make individual GetBlob requests for each range
+		singleRangeParam := &GetBlobInput{
+			Key:     param.Key,
+			Start:   r.Start,
+			Count:   r.Count,
+			IfMatch: param.IfMatch,
+		}
+
+		resp, err := b.GetBlob(singleRangeParam)
+		if err != nil {
+			// Close any previously opened readers
+			for _, part := range parts {
+				part.Body.Close()
+			}
+			return nil, err
+		}
+
+		if i == 0 {
+			firstResp = resp
+		}
+
+		contentType := "application/octet-stream"
+		if resp.ContentType != nil {
+			contentType = *resp.ContentType
+		}
+
+		parts = append(parts, MultiRangePart{
+			Range:       r,
+			ContentType: contentType,
+			Body:        resp.Body,
+		})
+	}
+
+	var headOutput HeadBlobOutput
+	if firstResp != nil {
+		headOutput = firstResp.HeadBlobOutput
+	}
+
+	return &GetBlobMultiRangeOutput{
+		HeadBlobOutput: headOutput,
+		Parts:          parts,
 	}, nil
 }
 

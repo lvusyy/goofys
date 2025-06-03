@@ -32,6 +32,8 @@ type Capabilities struct {
 	// indicates that the blob store has native support for directories
 	DirBlob bool
 	Name    string
+	// indicates support for HTTP multi-range requests
+	SupportsMultiRange bool
 }
 
 type HeadBlobInput struct {
@@ -128,6 +130,32 @@ type GetBlobOutput struct {
 
 	Body io.ReadCloser
 
+	RequestId string
+}
+
+// Range represents a byte range for multi-range requests
+type Range struct {
+	Start uint64
+	Count uint64
+}
+
+type GetBlobMultiRangeInput struct {
+	Key     string
+	Ranges  []Range
+	IfMatch *string
+}
+
+// MultiRangePart represents a single part of a multi-range response
+type MultiRangePart struct {
+	Range       Range
+	ContentType string
+	Body        io.ReadCloser
+}
+
+type GetBlobMultiRangeOutput struct {
+	HeadBlobOutput
+
+	Parts     []MultiRangePart
 	RequestId string
 }
 
@@ -234,6 +262,7 @@ type StorageBackend interface {
 	RenameBlob(param *RenameBlobInput) (*RenameBlobOutput, error)
 	CopyBlob(param *CopyBlobInput) (*CopyBlobOutput, error)
 	GetBlob(param *GetBlobInput) (*GetBlobOutput, error)
+	GetBlobMultiRange(param *GetBlobMultiRangeInput) (*GetBlobMultiRangeOutput, error)
 	PutBlob(param *PutBlobInput) (*PutBlobOutput, error)
 	MultipartBlobBegin(param *MultipartBlobBeginInput) (*MultipartBlobCommitInput, error)
 	MultipartBlobAdd(param *MultipartBlobAddInput) (*MultipartBlobAddOutput, error)
@@ -396,6 +425,11 @@ func (s *StorageBackendInitWrapper) GetBlob(param *GetBlobInput) (*GetBlobOutput
 	return s.StorageBackend.GetBlob(param)
 }
 
+func (s *StorageBackendInitWrapper) GetBlobMultiRange(param *GetBlobMultiRangeInput) (*GetBlobMultiRangeOutput, error) {
+	s.Init("")
+	return s.StorageBackend.GetBlobMultiRange(param)
+}
+
 func (s *StorageBackendInitWrapper) PutBlob(param *PutBlobInput) (*PutBlobOutput, error) {
 	s.Init("")
 	return s.StorageBackend.PutBlob(param)
@@ -522,6 +556,10 @@ func (e StorageBackendInitError) GetBlob(param *GetBlobInput) (*GetBlobOutput, e
 	} else {
 		return nil, fuse.ENOENT
 	}
+}
+
+func (e StorageBackendInitError) GetBlobMultiRange(param *GetBlobMultiRangeInput) (*GetBlobMultiRangeOutput, error) {
+	return nil, e
 }
 
 func (e StorageBackendInitError) PutBlob(param *PutBlobInput) (*PutBlobOutput, error) {

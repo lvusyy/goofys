@@ -179,7 +179,8 @@ func NewADLv2(bucket string, flags *FlagStorage, config *ADLv2Config) (*ADLv2, e
 			Name:    "adl2",
 			// tested on 2019-11-07, seems to have same
 			// limit as azblob
-			MaxMultipartSize: 100 * 1024 * 1024,
+			MaxMultipartSize:   100 * 1024 * 1024,
+			SupportsMultiRange: false, // ADLv2 doesn't support multi-range requests
 		},
 	}
 
@@ -612,6 +613,11 @@ func (b *ADLv2) GetBlob(param *GetBlobInput) (*GetBlobOutput, error) {
 		},
 		Body: *res.Value,
 	}, nil
+}
+
+func (b *ADLv2) GetBlobMultiRange(param *GetBlobMultiRangeInput) (*GetBlobMultiRangeOutput, error) {
+	// ADLv2 doesn't support multi-range requests natively
+	return nil, syscall.ENOTSUP
 }
 
 func (b *ADLv2) toADLProperties(metadata map[string]*string) string {

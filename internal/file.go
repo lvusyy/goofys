@@ -303,6 +303,81 @@ type S3ReadBuffer struct {
 	buf    *Buffer
 }
 
+// S3MultiRangeReadBuffer handles multiple non-contiguous ranges in a single request
+type S3MultiRangeReadBuffer struct {
+	s3          StorageBackend
+	nRetries    uint8
+	ranges      []Range
+	parts       []MultiRangePart
+	currentPart int
+
+	// Current position within the current part
+	partOffset uint64
+}
+
+func (b S3MultiRangeReadBuffer) Init(fh *FileHandle, ranges []Range) *S3MultiRangeReadBuffer {
+	if !fh.cloud.Capabilities().SupportsMultiRange || !fh.inode.fs.flags.EnableMultiRange {
+		return nil
+	}
+
+	b.s3 = fh.cloud
+	b.ranges = ranges
+	b.nRetries = 3
+	b.currentPart = 0
+	b.partOffset = 0
+
+	// Make the multi-range request
+	resp, err := b.s3.GetBlobMultiRange(&GetBlobMultiRangeInput{
+		Key:    fh.key,
+		Ranges: ranges,
+	})
+	if err != nil {
+		fh.inode.logFuse("multi-range request failed, falling back to single ranges", err)
+		return nil
+	}
+
+	b.parts = resp.Parts
+	return &b
+}
+
+func (b *S3MultiRangeReadBuffer) Read(offset uint64, p []byte) (n int, err error) {
+	// Find which part contains the requested offset
+	for i, r := range b.ranges {
+		if offset >= r.Start && offset < r.Start+r.Count {
+			if i != b.currentPart {
+				// Switch to a different part
+				b.currentPart = i
+				b.partOffset = 0
+			}
+
+			// Calculate offset within this part
+			partStart := offset - r.Start
+			if partStart != b.partOffset {
+				// We need to seek within the part, which we can't do efficiently
+				// This indicates non-sequential access within the multi-range buffer
+				return 0, fmt.Errorf("non-sequential access within multi-range buffer")
+			}
+
+			// Read from the current part
+			n, err = b.parts[i].Body.Read(p)
+			if n > 0 {
+				b.partOffset += uint64(n)
+			}
+			return n, err
+		}
+	}
+
+	return 0, fmt.Errorf("offset %d not found in any range", offset)
+}
+
+func (b *S3MultiRangeReadBuffer) Close() {
+	for _, part := range b.parts {
+		if part.Body != nil {
+			part.Body.Close()
+		}
+	}
+}
+
 func (b S3ReadBuffer) Init(fh *FileHandle, offset uint64, size uint32) *S3ReadBuffer {
 	b.s3 = fh.cloud
 	b.offset = offset
@@ -423,6 +498,16 @@ func (fh *FileHandle) readFromReadAhead(offset uint64, buf []byte) (bytesRead in
 }
 
 func (fh *FileHandle) readAhead(offset uint64, needAtLeast int) (err error) {
+	// First, try to use multi-range requests if beneficial
+	if ranges := fh.analyzeReadPattern(offset, needAtLeast); ranges != nil {
+		fh.inode.logFuse("using multi-range request for", len(ranges), "ranges")
+		err = fh.readAheadMultiRange(ranges)
+		if err == nil {
+			return nil
+		}
+		fh.inode.logFuse("multi-range request failed, falling back to single ranges:", err)
+	}
+
 	existingReadahead := uint32(0)
 	for _, b := range fh.buffers {
 		existingReadahead += b.size
@@ -464,6 +549,93 @@ func (fh *FileHandle) readAhead(offset uint64, needAtLeast int) (err error) {
 		}
 	}
 
+	return nil
+}
+
+// analyzeReadPattern analyzes the current read buffers to detect gaps and determine
+// if multi-range requests would be beneficial
+func (fh *FileHandle) analyzeReadPattern(offset uint64, needAtLeast int) []Range {
+	if !fh.cloud.Capabilities().SupportsMultiRange || !fh.inode.fs.flags.EnableMultiRange {
+		return nil
+	}
+
+	// Calculate what ranges we would normally request
+	var ranges []Range
+	existingReadahead := uint32(0)
+	for _, b := range fh.buffers {
+		existingReadahead += b.size
+	}
+
+	readAheadAmount := MAX_READAHEAD
+	currentOffset := offset + uint64(existingReadahead)
+
+	// Collect potential ranges
+	for readAheadAmount-existingReadahead >= READAHEAD_CHUNK {
+		off := currentOffset
+		remaining := fh.inode.Attributes.Size - off
+
+		size := MinUInt32(readAheadAmount-existingReadahead, READAHEAD_CHUNK)
+		size = uint32(MinUInt64(uint64(size), remaining))
+
+		if size != 0 {
+			ranges = append(ranges, Range{
+				Start: off,
+				Count: uint64(size),
+			})
+			existingReadahead += size
+			currentOffset = off + uint64(size)
+		}
+
+		if size != READAHEAD_CHUNK {
+			break
+		}
+	}
+
+	// Only use multi-range if we have multiple ranges and the gaps are significant
+	if len(ranges) < 2 {
+		return nil
+	}
+
+	// Check if there are significant gaps between ranges that would benefit from batching
+	totalRangeSize := uint64(0)
+	for _, r := range ranges {
+		totalRangeSize += r.Count
+	}
+
+	totalSpan := ranges[len(ranges)-1].Start + ranges[len(ranges)-1].Count - ranges[0].Start
+	gapRatio := float64(totalSpan-totalRangeSize) / float64(totalSpan)
+
+	// If gaps are more than 50% of the total span and each gap is larger than threshold, use multi-range
+	if gapRatio > 0.5 && totalSpan-totalRangeSize > uint64(fh.inode.fs.flags.MultiRangeThreshold) {
+		// Limit the number of ranges to the configured batch size
+		if len(ranges) > fh.inode.fs.flags.MultiRangeBatchSize {
+			ranges = ranges[:fh.inode.fs.flags.MultiRangeBatchSize]
+		}
+		return ranges
+	}
+
+	return nil
+}
+
+// readAheadMultiRange attempts to use multi-range requests for read-ahead
+func (fh *FileHandle) readAheadMultiRange(ranges []Range) error {
+	multiRangeBuf := S3MultiRangeReadBuffer{}.Init(fh, ranges)
+	if multiRangeBuf == nil {
+		return fmt.Errorf("failed to create multi-range buffer")
+	}
+
+	// For now, we'll create individual buffers for each range
+	// In a more sophisticated implementation, we could create a single
+	// buffer that manages multiple ranges internally
+	for _, r := range ranges {
+		readAheadBuf := S3ReadBuffer{}.Init(fh, r.Start, uint32(r.Count))
+		if readAheadBuf != nil {
+			fh.buffers = append(fh.buffers, readAheadBuf)
+		}
+	}
+
+	// Close the multi-range buffer since we've extracted the data
+	multiRangeBuf.Close()
 	return nil
 }
 

@@ -69,6 +69,13 @@ func (s *TestBackend) GetBlob(param *GetBlobInput) (*GetBlobOutput, error) {
 	return s.StorageBackend.GetBlob(param)
 }
 
+func (s *TestBackend) GetBlobMultiRange(param *GetBlobMultiRangeInput) (*GetBlobMultiRangeOutput, error) {
+	if s.err != nil {
+		return nil, s.err
+	}
+	return s.StorageBackend.GetBlobMultiRange(param)
+}
+
 func (s *TestBackend) PutBlob(param *PutBlobInput) (*PutBlobOutput, error) {
 	if s.err != nil {
 		return nil, s.err

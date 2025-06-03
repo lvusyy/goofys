@@ -244,6 +244,23 @@ func NewApp() (app *cli.App) {
 				Usage: "Set the timeout on HTTP requests to S3",
 			},
 
+			cli.BoolFlag{
+				Name:  "enable-multi-range",
+				Usage: "Enable HTTP multi-range requests for improved performance on non-contiguous reads (default: off)",
+			},
+
+			cli.IntFlag{
+				Name:  "multi-range-batch-size",
+				Value: 5,
+				Usage: "Maximum number of ranges to include in a single multi-range request (default: 5)",
+			},
+
+			cli.Int64Flag{
+				Name:  "multi-range-threshold",
+				Value: 1024 * 1024, // 1MB
+				Usage: "Minimum gap size in bytes to trigger multi-range requests (default: 1048576)",
+			},
+
 			/////////////////////////
 			// Debugging
 			/////////////////////////
@@ -276,7 +293,7 @@ func NewApp() (app *cli.App) {
 		flagCategories[f] = "aws"
 	}
 
-	for _, f := range []string{"cheap", "no-implicit-dir", "stat-cache-ttl", "type-cache-ttl", "http-timeout"} {
+	for _, f := range []string{"cheap", "no-implicit-dir", "stat-cache-ttl", "type-cache-ttl", "http-timeout", "enable-multi-range", "multi-range-batch-size", "multi-range-threshold"} {
 		flagCategories[f] = "tuning"
 	}
 
@@ -333,6 +350,11 @@ func PopulateFlags(c *cli.Context) (ret *FlagStorage) {
 		StatCacheTTL: c.Duration("stat-cache-ttl"),
 		TypeCacheTTL: c.Duration("type-cache-ttl"),
 		HTTPTimeout:  c.Duration("http-timeout"),
+
+		// Multi-range request support
+		EnableMultiRange:     c.Bool("enable-multi-range"),
+		MultiRangeBatchSize:  c.Int("multi-range-batch-size"),
+		MultiRangeThreshold:  c.Int64("multi-range-threshold"),
 
 		// Common Backend Config
 		Endpoint:       c.String("endpoint"),

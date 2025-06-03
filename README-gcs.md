@@ -1,5 +1,6 @@
 # Google Cloud Storage (GCS)
 
+Google Cloud Storage supports HTTP multi-range requests for improved performance with sparse file access patterns. Use the `--enable-multi-range` flag to enable this feature.
 
 ## Prerequisite
 
@@ -26,4 +27,10 @@ GOOGLE_APPLICATION_CREDENTIALS="/path/to/creds.json" goofys gs://[BUCKET] /path/
 
 ```
 goofys gs://[BUCKET] [MOUNT DIRECTORY]
+```
+
+### With multi-range requests enabled
+
+```
+GOOGLE_APPLICATION_CREDENTIALS="/path/to/creds.json" goofys --enable-multi-range gs://[BUCKET] /path/to/mount
 ```

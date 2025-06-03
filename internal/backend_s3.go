@@ -18,6 +18,9 @@ import (
 	. "github.com/kahing/goofys/api/common"
 
 	"fmt"
+	"io"
+	"mime"
+	"mime/multipart"
 	"net/http"
 	"net/url"
 	"strconv"
@@ -62,8 +65,9 @@ func NewS3(bucket string, flags *FlagStorage, config *S3Config) (*S3Backend, err
 		flags:     flags,
 		config:    config,
 		cap: Capabilities{
-			Name:             "s3",
-			MaxMultipartSize: 5 * 1024 * 1024 * 1024,
+			Name:               "s3",
+			MaxMultipartSize:   5 * 1024 * 1024 * 1024,
+			SupportsMultiRange: true,
 		},
 	}
 
@@ -759,6 +763,133 @@ func (s *S3Backend) GetBlob(param *GetBlobInput) (*GetBlobOutput, error) {
 		Body:      resp.Body,
 		RequestId: s.getRequestId(req),
 	}, nil
+}
+
+func (s *S3Backend) GetBlobMultiRange(param *GetBlobMultiRangeInput) (*GetBlobMultiRangeOutput, error) {
+	if len(param.Ranges) == 0 {
+		return nil, fmt.Errorf("no ranges specified")
+	}
+
+	// Build the Range header for multi-range request
+	var rangeSpecs []string
+	for _, r := range param.Ranges {
+		if r.Count > 0 {
+			rangeSpecs = append(rangeSpecs, fmt.Sprintf("%d-%d", r.Start, r.Start+r.Count-1))
+		} else {
+			rangeSpecs = append(rangeSpecs, fmt.Sprintf("%d-", r.Start))
+		}
+	}
+	rangeHeader := "bytes=" + strings.Join(rangeSpecs, ",")
+
+	get := s3.GetObjectInput{
+		Bucket: &s.bucket,
+		Key:    &param.Key,
+		Range:  &rangeHeader,
+	}
+
+	if s.config.SseC != "" {
+		get.SSECustomerAlgorithm = PString("AES256")
+		get.SSECustomerKey = &s.config.SseC
+		get.SSECustomerKeyMD5 = &s.config.SseCDigest
+	}
+
+	req, resp := s.GetObjectRequest(&get)
+	err := req.Send()
+	if err != nil {
+		return nil, mapAwsError(err)
+	}
+
+	// Parse the multipart response
+	parts, err := s.parseMultipartResponse(resp.Body, resp.ContentType, param.Ranges)
+	if err != nil {
+		resp.Body.Close()
+		return nil, err
+	}
+
+	return &GetBlobMultiRangeOutput{
+		HeadBlobOutput: HeadBlobOutput{
+			BlobItemOutput: BlobItemOutput{
+				Key:          &param.Key,
+				ETag:         resp.ETag,
+				LastModified: resp.LastModified,
+				Size:         uint64(*resp.ContentLength),
+				StorageClass: resp.StorageClass,
+			},
+			ContentType: resp.ContentType,
+			Metadata:    metadataToLower(resp.Metadata),
+		},
+		Parts:     parts,
+		RequestId: s.getRequestId(req),
+	}, nil
+}
+
+func (s *S3Backend) parseMultipartResponse(body io.ReadCloser, contentType *string, ranges []Range) ([]MultiRangePart, error) {
+	defer body.Close()
+
+	if contentType == nil {
+		return nil, fmt.Errorf("missing content-type header")
+	}
+
+	mediaType, params, err := mime.ParseMediaType(*contentType)
+	if err != nil {
+		return nil, fmt.Errorf("failed to parse content-type: %v", err)
+	}
+
+	if !strings.HasPrefix(mediaType, "multipart/") {
+		// Single range response, treat as single part
+		if len(ranges) != 1 {
+			return nil, fmt.Errorf("expected single range but got %d ranges", len(ranges))
+		}
+		return []MultiRangePart{
+			{
+				Range:       ranges[0],
+				ContentType: *contentType,
+				Body:        body,
+			},
+		}, nil
+	}
+
+	boundary := params["boundary"]
+	if boundary == "" {
+		return nil, fmt.Errorf("missing boundary in multipart content-type")
+	}
+
+	reader := multipart.NewReader(body, boundary)
+	var parts []MultiRangePart
+	rangeIndex := 0
+
+	for {
+		part, err := reader.NextPart()
+		if err == io.EOF {
+			break
+		}
+		if err != nil {
+			return nil, fmt.Errorf("failed to read multipart: %v", err)
+		}
+
+		if rangeIndex >= len(ranges) {
+			part.Close()
+			return nil, fmt.Errorf("more parts than expected ranges")
+		}
+
+		partContentType := part.Header.Get("Content-Type")
+		if partContentType == "" {
+			partContentType = "application/octet-stream"
+		}
+
+		parts = append(parts, MultiRangePart{
+			Range:       ranges[rangeIndex],
+			ContentType: partContentType,
+			Body:        part,
+		})
+		rangeIndex++
+	}
+
+	if rangeIndex != len(ranges) {
+		return nil, fmt.Errorf("expected %d parts but got %d", len(ranges), rangeIndex)
+	}
+
+	return parts, nil
 }
 
 func getDate(resp *http.Response) *time.Time {

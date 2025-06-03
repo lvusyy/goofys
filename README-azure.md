@@ -9,6 +9,8 @@ $ $GOPATH/bin/goofys wasb://container <mountpoint>
 $ $GOPATH/bin/goofys wasb://container:prefix <mountpoint> # if you only want to mount objects under a prefix
 ```
 
+**Note**: Azure Blob Storage does not support HTTP multi-range requests. The `--enable-multi-range` flag will be ignored when using Azure backends.
+
 Users can also configure credentials via `AZURE_STORAGE_ACCOUNT` and
 `AZURE_STORAGE_KEY` environment variables. See [Azure CLI configuration](https://docs.microsoft.com/en-us/cli/azure/azure-cli-configuration?view=azure-cli-latest#cli-configuration-values-and-environment-variables) for details. Goofys does not support `connection_string` or `sas_token` yet.
 
@@ -50,6 +52,8 @@ $ $GOPATH/bin/goofys adl://servicename.azuredatalakestore.net <mountpoint>
 $ $GOPATH/bin/goofys adl://servicename.azuredatalakestore.net:prefix <mountpoint>
 ```
 
+**Note**: Azure Data Lake Gen1 does not support HTTP multi-range requests.
+
 # Azure Data Lake Storage Gen2
 
 Configure your credentials the same way as [Azure Blob Storage](https://github.com/kahing/goofys/blob/master/README-azure.md#azure-blob-storage) above, and then:
@@ -58,3 +62,5 @@ Configure your credentials the same way as [Azure Blob Storage](https://github.c
 $ $GOPATH/bin/goofys abfs://container <mountpoint>
 $ $GOPATH/bin/goofys abfs://container:prefix <mountpoint>
 ```
+
+**Note**: Azure Data Lake Gen2 does not support HTTP multi-range requests.

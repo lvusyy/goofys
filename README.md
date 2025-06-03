@@ -17,6 +17,14 @@ permission). Goofys does not have an on disk data cache (checkout
 [catfs](https://github.com/kahing/catfs)), and consistency model is
 close-to-open.
 
+## Performance Features
+
+Goofys includes several performance optimizations:
+
+* **Multi-Range Requests**: When enabled, goofys can issue HTTP multi-range requests to fetch multiple non-contiguous byte ranges in a single request, reducing latency for sparse file access patterns.
+* **Read-ahead buffering**: Intelligent prefetching of data to improve sequential read performance.
+* **Parallel operations**: Concurrent handling of multiple file operations.
+
 # Installation
 
 * On Linux, install via [pre-built binaries](https://github.com/kahing/goofys/releases/latest/download/goofys). 
@@ -58,6 +66,20 @@ configured for `root`, and can add this to `/etc/fstab`:
 ```
 goofys#bucket   /mnt/mountpoint        fuse     _netdev,allow_other,--file-mode=0666,--dir-mode=0777    0       0
 ```
+
+## Performance Tuning
+
+For improved performance with sparse file access patterns, you can enable multi-range requests:
+
+```ShellSession
+$ $GOPATH/bin/goofys --enable-multi-range <bucket> <mountpoint>
+```
+
+Additional multi-range options:
+* `--multi-range-batch-size N`: Maximum number of ranges per request (default: 5)
+* `--multi-range-threshold N`: Minimum gap size in bytes to trigger multi-range (default: 1048576)
+
+**Note**: Multi-range requests are supported on AWS S3 and Google Cloud Storage, but not on Azure storage services.
 
 See also: [Instruction for Azure Blob Storage, Azure Data Lake Gen1, and Azure Data Lake Gen2](https://github.com/kahing/goofys/blob/master/README-azure.md).
 
@@ -110,7 +132,7 @@ goofys has been tested with the following non-AWS S3 providers:
 * Ceph (ex: Digital Ocean Spaces, DreamObjects, gridscale)
 * EdgeFS
 * EMC Atmos
-* Google Cloud Storage
+* Google Cloud Storage (supports multi-range requests)
 * Minio (limited)
 * OpenStack Swift
 * S3Proxy
@@ -119,9 +141,9 @@ goofys has been tested with the following non-AWS S3 providers:
 
 Additionally, goofys also works with the following non-S3 object stores:
 
-* Azure Blob Storage
-* Azure Data Lake Gen1
-* Azure Data Lake Gen2
+* Azure Blob Storage (multi-range requests not supported)
+* Azure Data Lake Gen1 (multi-range requests not supported)
+* Azure Data Lake Gen2 (multi-range requests not supported)
 
 # References
 

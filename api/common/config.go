@@ -51,6 +51,11 @@ type FlagStorage struct {
 	TypeCacheTTL time.Duration
 	HTTPTimeout  time.Duration
 
+	// Multi-range request support
+	EnableMultiRange     bool
+	MultiRangeBatchSize  int
+	MultiRangeThreshold  int64
+
 	// Debugging
 	DebugFuse  bool
 	DebugS3    bool

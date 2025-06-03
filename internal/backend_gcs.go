@@ -68,10 +68,11 @@ func NewGCS(bucket string, config *common.GCSConfig) (*GCSBackend, error) {
 		bucketName: bucket,
 		bucket:     client.Bucket(bucket),
 		cap: Capabilities{
-			MaxMultipartSize: 5 * 1024 * 1024 * 1024,
-			Name:             "gcs",
+			MaxMultipartSize:    5 * 1024 * 1024 * 1024,
+			Name:                "gcs",
 			// parallel multipart upload is not supported in GCS
 			NoParallelMultipart: true,
+			SupportsMultiRange:  true,
 		},
 		logger: common.GetLogger("gcs"),
 	}, nil
@@ -281,6 +282,63 @@ func (g *GCSBackend) GetBlob(param *GetBlobInput) (*GetBlobOutput, error) {
 			ContentType: &reader.Attrs.ContentType,
 		},
 		Body: reader,
+	}, nil
+}
+
+// GetBlobMultiRange implements multi-range requests for GCS.
+// Note: GCS doesn't natively support multi-range requests, so we simulate it
+// by making multiple single-range requests.
+func (g *GCSBackend) GetBlobMultiRange(param *GetBlobMultiRangeInput) (*GetBlobMultiRangeOutput, error) {
+	if len(param.Ranges) == 0 {
+		return nil, fmt.Errorf("no ranges specified")
+	}
+
+	// For GCS, we need to make separate requests for each range
+	var parts []MultiRangePart
+	var firstReader *storage.Reader
+
+	for i, r := range param.Ranges {
+		obj := g.bucket.Object(param.Key).ReadCompressed(true)
+
+		var reader *storage.Reader
+		var err error
+		if r.Count > 0 {
+			reader, err = obj.NewRangeReader(context.Background(), int64(r.Start), int64(r.Count))
+		} else {
+			reader, err = obj.NewRangeReader(context.Background(), int64(r.Start), -1)
+		}
+
+		g.logger.Debugf("GET Blob Multi-Range %s range %d = %v", param.Key, i, getDebugResponseStatus(err))
+		if err != nil {
+			// Close any previously opened readers
+			for _, part := range parts {
+				part.Body.Close()
+			}
+			return nil, mapGCSError(err)
+		}
+
+		if i == 0 {
+			firstReader = reader
+		}
+
+		parts = append(parts, MultiRangePart{
+			Range:       r,
+			ContentType: reader.Attrs.ContentType,
+			Body:        reader,
+		})
+	}
+
+	// Use the first reader's attributes for the response metadata
+	return &GetBlobMultiRangeOutput{
+		HeadBlobOutput: HeadBlobOutput{
+			BlobItemOutput: BlobItemOutput{
+				Key:          PString(param.Key),
+				LastModified: &firstReader.Attrs.LastModified,
+				Size:         uint64(firstReader.Attrs.Size),
+			},
+			ContentType: &firstReader.Attrs.ContentType,
+		},
+		Parts: parts,
 	}, nil
 }
 
